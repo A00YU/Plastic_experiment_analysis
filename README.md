@@ -17,8 +17,12 @@ Color-coded treatment explanation: G = negative control, Y = seasoned macroplast
 
 # Each round analysis workflow:
 Data cleaning
+
 Survival analysis
+
 Growth analysis
+
 Fecundity analysis
+
 Offspring fitness analysis
 
