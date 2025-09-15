@@ -16,7 +16,7 @@ This experiment has 5 treatments: each treatment G, Y, and O, has 50 jars, while
 Color-coded treatment explanation: G = negative control, Y = seasoned macroplastic of low abundance, O = seasoned macroplastic of high abundance, W-1 = virgin macroplastic of low abundance, and W-3 = virgin macroplastic of high abundance
 
 Periphyton analysis data sheets are "periphyton_lettuce_CN_data" for C: N ratio analysis and "Seasoned plastic dimensions & algae measurements" for the rest of the periphyton analysis.
-periphyton_lettuce_CN_data: each sample is run C: N analysis in duplicates if sufficient sample weight allows (noted by "-1" as duplicate 1 and "-2" as duplicate 2)
+"periphyton_lettuce_CN_data": each sample is run C: N analysis in duplicates if sufficient sample weight allows (noted by "...-1" as duplicate 1 and "...-2" as duplicate 2); naming conventions: eg. R4S1-2 means the 4th replacement of seasoned plastic sample 1 duplicate number 2. 
 
 # Each round analysis workflow:
 Data cleaning
