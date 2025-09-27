@@ -12,13 +12,13 @@ library(ggplot2)
 
 ####### load data#########
 # Load the master data sheet
-weekly_data <- read.csv("/Users/aoyu/Desktop/Snail_Data/Plastic Tank Experiment Data Sheet Round 1.csv", skip = 2)
+weekly_data <- read.csv("Plastic Tank Experiment Data Sheet Round 1.csv", skip = 2)
 
 # Load the new macro+micro treatment specifics data
-macro_micro_treatment <- read.csv("/Users/aoyu/Desktop/Snail_Data/Plastic Tank Experiment Data Sheet - Macro+Micro-treatment Specifics.csv", skip = 1)
+macro_micro_treatment <- read.csv("Plastic Tank Experiment Data Sheet - Macro+Micro-treatment Specifics.csv", skip = 1)
 
 # Load the macro treatment specifics data
-macro_treatment <- read.csv("/Users/aoyu/Desktop/Snail_Data/Plastic Tank Experiment Data Sheet - Macro-treatment Specifics.csv", skip = 1)
+macro_treatment <- read.csv("Plastic Tank Experiment Data Sheet - Macro-treatment Specifics.csv", skip = 1)
 
 # Clean and standardize column names for all datasets
 colnames(macro_micro_treatment) <- make.names(colnames(macro_micro_treatment))
@@ -246,7 +246,7 @@ filtered_data_O <- weekly_data %>%
 
 # table(filtered_data_O$Color, filtered_data_O$Jar_num)
 
-# Combine all filtered data into one dataset
+# Combine all filtered data into one dataset (long, so multiple rows per jar)
 all_data <- bind_rows(filtered_data_GY, filtered_data_O, filtered_data_W) %>%
   mutate(
     Treatment = dplyr::recode(Color,
@@ -255,5 +255,18 @@ all_data <- bind_rows(filtered_data_GY, filtered_data_O, filtered_data_W) %>%
     # Unique physical jar (color x jar number)
     jar_id = interaction(Color, Jar_num, drop = TRUE)
   )
+
+# summarised data so only 1 row per week
+all_data_summary <- bind_rows(filtered_data_GY, filtered_data_O, filtered_data_W) %>%
+  mutate(
+    Treatment = dplyr::recode(Color,
+                              "G" = "Control", "Y" = "Micro", "O" = "Macro", "W" = "Macro+Micro"),
+    Treatment = factor(Treatment, levels = c("Control","Micro","Macro","Macro+Micro")),
+    # Unique physical jar (color x jar number)
+    jar_id = interaction(Color, Jar_num, drop = TRUE)
+  ) %>%
+  group_by(Treatment, jar_id, Jar_num) %>%
+  summarise(across(everything(), last), .groups = "drop")
+
 
 # table(all_data$Color, all_data$Jar_num)
