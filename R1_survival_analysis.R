@@ -9,9 +9,10 @@ library(glm2)
 library(tidyr)
 library(dplyr)
 library(ggplot2)
+library(survRM2)
 
 ####### load data#########
-source("/Users/aoyu/Desktop/Snail_Data/R1_data_cleaning.R") # cleaned master data sheet called all_data
+source("R1_data_cleaning.R") # cleaned master data sheet called all_data
 
 ####### build survival df #########
 # Helper fxn to gather the weekly "Adult_death_k" and "Week_of_death_k" into long 
@@ -337,7 +338,7 @@ death_long <- death_table %>%
   pivot_longer(cols = c("Control", "Micro", "Macro", "Macro+Micro"), names_to = "Treatment", values_to = "deaths")
 
 # Plot for absolute death
-ggplot(death_long, aes(x = week_of_death, y = deaths, color = Color)) +
+ggplot(death_long, aes(x = week_of_death, y = deaths, color = Treatment)) +
   geom_line() +
   geom_point() +
   labs(title = "Number of Deaths per Week by Color",
@@ -364,3 +365,4 @@ ggplot(death_long, aes(x = week_of_death, y = relative_deaths, color = Treatment
        y = "Relative Number of Deaths") +
   scale_x_continuous(breaks = seq(0, 13, by = 1)) +
   theme_minimal()
+
