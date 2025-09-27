@@ -13,7 +13,7 @@ library(mgcv)
 library(car)
 
 ####### load data#########
-source("/Users/aoyu/Desktop/Snail_Data/R1_data_cleaning.R") # cleaned master data sheet called all_data
+source("R1_data_cleaning.R") # cleaned master data sheet called all_data
 all_data_repro <- all_data[all_data$Week_num != 1, ]  # Remove week 1 data
 all_data_repro <- all_data_repro %>% select(Jar_num, Color, Week_num, Total_egg_mass_num, Adult_death_1, Adult_death_2, Adult_death_3, Treatment)
 all_data_repro$total_egg_mass_num <- as.numeric(all_data_repro$Total_egg_mass_num)
