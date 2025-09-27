@@ -11,9 +11,10 @@ library(dplyr)
 library(ggplot2)
 library(ggsignif)
 library(mgcv)
+library(patchwork)
 
 ####### load data#########
-source("/Users/aoyu/Desktop/Snail_Data/R1_data_cleaning.R") # cleaned master data sheet called all_data
+source("R1_data_cleaning.R") # cleaned master data sheet called all_data
 
 ####### Offspring hatching analysis #########
 all_data_hatch <- all_data %>% 
@@ -146,3 +147,83 @@ ggplot(fitness_summary, aes(x = Week_num, y = mean_fitness, color = Treatment, g
 #               tip_length = 0,
 #               bracket.size = 0) +
 #   scale_y_continuous(limits = c(0, 1))
+
+# ============================
+# Predictions & Plots (emmeans)
+# ============================
+
+# Get marginal means (predicted hatch success) per treatment
+emm_trt <- emmeans(hatch_model_withWeek_num, ~ Treatment, type = "response")
+emm_trt_df <- as.data.frame(emm_trt)
+
+# Panel 1: Predicted means per treatment
+p1 <- ggplot(emm_trt_df, aes(x = Treatment, y = prob, color = Treatment)) +
+  geom_point(size = 3, position = position_dodge(width = 0.5)) +
+  geom_errorbar(aes(ymin = asymp.LCL, ymax = asymp.UCL),
+                width = 0.2, position = position_dodge(width = 0.5)) +
+  scale_color_manual(values = c("Control" = "green",
+                                "Micro" = "yellow",
+                                "Macro" = "orange",
+                                "Macro+Micro" = "darkgray")) +
+  labs(x = "Treatment Group",
+       y = "Predicted Hatching Success (±95% CI)",
+       title = "Predicted Offspring Hatch Success by Treatment") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+# Panel 2: Predicted trajectories across weeks + raw boxplots
+emm_trt_week <- emmeans(hatch_model_withWeek_num,
+                        ~ Treatment | Week_num,
+                        at = list(Week_num = 1:13),  # predict for all weeks
+                        type = "response")
+emm_df_week <- as.data.frame(emm_trt_week)
+
+p2 <- ggplot() +
+  # raw data boxplots
+  # geom_boxplot(data = all_data_hatch,
+  #              aes(x = Week_num, y = hatch_success, 
+  #                  group = interaction(Treatment, Week_num),
+  #                  fill = Treatment),
+  #              alpha = 0.3, outlier.size = 0.5, position = position_dodge(width = 0.8)) +
+  # model predictions
+  geom_line(data = emm_df_week,
+            aes(x = Week_num, y = prob, color = Treatment, group = Treatment),
+            size = 1.2) +
+  geom_ribbon(data = emm_df_week,
+              aes(x = Week_num, ymin = asymp.LCL, ymax = asymp.UCL,
+                  fill = Treatment, group = Treatment),
+              alpha = 0.2, linetype = 0) +
+  scale_color_manual(values = c("Control" = "green",
+                                "Micro" = "yellow",
+                                "Macro" = "orange",
+                                "Macro+Micro" = "darkgray")) +
+  scale_fill_manual(values = c("Control" = "green",
+                               "Micro" = "yellow",
+                               "Macro" = "orange",
+                               "Macro+Micro" = "darkgray")) +
+  labs(x = "Week Number",
+       y = "Hatching Success",
+       title = "Predicted Hatch Success over Time (with raw boxplots)") +
+  theme_minimal()
+
+# Panel 3: Raw hatching success boxplots by treatment
+p3 <- ggplot(all_data_hatch, aes(x = Treatment, y = hatch_success, fill = Treatment)) +
+  geom_boxplot(alpha = 0.7) +
+  scale_fill_manual(values = c("Control" = "green",
+                               "Micro" = "yellow",
+                               "Macro" = "orange",
+                               "Macro+Micro" = "darkgray")) +
+  labs(x = "Treatment Group",
+       y = "Hatching Success Rate",
+       title = "Raw Offspring Hatching Success by Treatment") +
+  theme_minimal()
+
+# Combine panels
+final_plot <- p1 / p2 / p3
+print(final_plot)
+
+# ============================
+# Print marginal means table
+# ============================
+print(emm_trt_df %>% 
+        select(Treatment, prob, SE, asymp.LCL, asymp.UCL))
