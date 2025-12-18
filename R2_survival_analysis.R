@@ -97,8 +97,19 @@ fit_re  <- coxme(Surv(week_survival, survival_status) ~ Treatment + (1|jar_id),
 # boundary issues make LRT conservative; report AIC
 (AIC(fit_fix))
 (AIC(fit_re))
-anova(fit_fix, fit_re) 
+anova(fit_fix, fit_re) # fixed model better
 
+# Saves model results as a CSV
+R2_survival_model_4treatments <- data.frame(
+  term = c("Biofouled Macro - Low", "Biofouled Macro - High", "Virgin Macro - Low", "Virgin Macro - High"),
+  estimate = c(-0.10180, -0.04495, 0.01800, 0.06185),
+  standard.error = c(0.14710, 0.14666,0.16915, 0.16647),
+  HR = c(0.90321, 0.95605, 1.01816, 1.06381),
+  HR.low = c(0.6770, 0.7172, 0.7309, 0.7677),
+  HR.high = c(1.205, 1.274, 1.418, 1.474),
+  p.value = c(0.489,0.759, 0.915, 0.710 ))
+
+write.csv(R2_survival_model_4treatments,  file = "/Users/aoyu/Desktop/Snail_Data/Outputs/R2_survival_model_4treatments.csv")
 ####### pairwise comparisons HRs separate abundance : "Treatment" #########
 # pairwise HRs with robust vcov for coxph (clustered)
 Vrob <- sandwich::sandwich(fit_cr)   
@@ -118,39 +129,40 @@ pairs_adj <- pw_ci %>%
   dplyr::mutate(
     # emmeans on a Cox PH uses log-HR with the internal "A - B" direction
     HR      = exp(-estimate),                       # report B vs A
-    HR_low  = exp(-.data[[upper_name]]),
-    HR_high = exp(-.data[[lower_name]]),
+    HR.low  = exp(-.data[[upper_name]]),
+    HR.high = exp(-.data[[lower_name]]),
     A = sub(" - .*", "", contrast),
     B = sub(".* - ", "", contrast),
-    label = sprintf("%s vs %s", B, A),
+    label = sprintf("%s - %s", B, A),
     perc_reduction = 1 - HR
   ) %>%
-  dplyr::select(label, HR, HR_low, HR_high, p.value, perc_reduction) %>%
-  arrange(p.value)
+  dplyr::select(label, estimate,
+                SE, HR, HR.low, HR.high, p.value) 
 
 # Pairwise HRs (Tukey-adjusted; robust vcov; B vs A)
 (pairs_adj)
+write.csv(pairs_adj,  file = "/Users/aoyu/Desktop/Snail_Data/Outputs/R2_survival_pairwise_4treatments.csv")
 
 ####### Cox model diagnostics for "Treatment" #########
 # porportional hazard assumption met?
 ph_test <- cox.zph(fit_fix)
 # Global and term-wise Schoenfeld PH tests (fixed-effects model)
-(ph_test) # not significant with p < 0.05
+(ph_test) # not significant with p > 0.05
 
 ####### plot survival curves for "Treatment"#########
 # Surv Curves: KM (Kaplan-Meier estimator) by treatment, Cox-predicted (cluster-robust), stratified Cox (diagnostic)
 sf_km <- survfit(Surv(week_survival, survival_status) ~ Treatment, data = per_snail)
 
 km_plot <- ggsurvplot(
-  sf_km, data = per_snail, conf.int = TRUE,
+  sf_km, data = per_snail, conf.int = TRUE,conf.int.alpha = 0.15,
   risk.table = TRUE, risk.table.height = 0.22,
   ggtheme = theme_minimal(base_size = 10), 
-  xlab = "Time (weeks)", 
+  xlab = "Weeks", 
   ylab = "Survival Probability",
   legend.title = "Treatment",
-  legend.labs = c("Control", "Seasoned Macro - Low", "Seasoned Macro - High",
+  legend.labs = c("Control", "Biofouled Macro - Low", "Biofouled Macro - High",
                   "Virgin Macro - Low", "Virgin Macro - High"),
-  palette = c("green", "yellow", "orange", "lightgray", "darkgray"),
+  palette = c("#6baf78", "#d4c2a8", "#a5855f", "#bcbcbc", "#8a8a8a"),
   xlim = c(0, 13),           
   break.time.by = 1 
 )
@@ -216,7 +228,11 @@ p_strat <- ggplot() +
 
 # plots!
 (km_plot$plot)
+# Save the plot to a PNG file
+ggsave(filename = "R2_survival_plot_4treatments.png", plot = km_plot$plot, bg = "white", path = "/Users/aoyu/Desktop/Snail_Data/Outputs", width = 9, height = 6, dpi = 300)
 (km_plot$table)
+ggsave(filename = "R2_survival_plot_4treatments_num_at_risk.png", plot = km_plot$table, bg = "white", path = "/Users/aoyu/Desktop/Snail_Data/Outputs", width = 9, height = 6, dpi = 300)
+
 (p_cox)
 (p_overlay) # why macro+ micro not starts at week 1? 
 (p_strat) # why macro+ micro not starts at week 1? 
@@ -314,6 +330,18 @@ fit_re  <- coxme(Surv(week_survival, survival_status) ~ Group + (1|jar_id),
 (AIC(fit_re))
 anova(fit_fix, fit_re)
 
+# Saves model results as a CSV
+R2_survival_model_grouped <- data.frame(
+  term = c("Biofouled Macro", "Virgin Macro"),
+  estimate = c(-0.07361, 0.04027),
+  standard.error = c(0.12714, 0.13948),
+  HR = c(0.929, 1.041),
+  HR.low = c(0.7241, 0.7921),
+  HR.high = c(1.192, 1.368),
+  p.value = c(0.563,0.773))
+
+write.csv(R2_survival_model_grouped,  file = "/Users/aoyu/Desktop/Snail_Data/Outputs/R2_survival_model_grouped.csv")
+
 ####### pairwise comparisons HRs group abundance: "Group" #########
 # pairwise HRs with robust vcov for coxph (clustered)
 Vrob <- sandwich::sandwich(fit_cr)   
@@ -333,18 +361,19 @@ pairs_adj <- pw_ci %>%
   dplyr::mutate(
     # emmeans on a Cox PH uses log-HR with the internal "A - B" direction
     HR      = exp(-estimate),                       # report B vs A
-    HR_low  = exp(-.data[[upper_name]]),
-    HR_high = exp(-.data[[lower_name]]),
+    HR.low  = exp(-.data[[upper_name]]),
+    HR.high = exp(-.data[[lower_name]]),
     A = sub(" - .*", "", contrast),
     B = sub(".* - ", "", contrast),
-    label = sprintf("%s vs %s", B, A),
+    label = sprintf("%s - %s", B, A),
     perc_reduction = 1 - HR
   ) %>%
-  dplyr::select(label, HR, HR_low, HR_high, p.value, perc_reduction) %>%
-  arrange(p.value)
+  dplyr::select(label, estimate,
+                SE, HR, HR.low, HR.high, p.value)
 
 # Pairwise HRs (Tukey-adjusted; robust vcov; B vs A)
 (pairs_adj)
+write.csv(pairs_adj,  file = "/Users/aoyu/Desktop/Snail_Data/Outputs/R2_survival_pairwise_grouped.csv")
 
 ####### Cox model diagnostics for "Group"#########
 # porportional hazard assumption met?
@@ -357,14 +386,14 @@ ph_test <- cox.zph(fit_fix)
 sf_km <- survfit(Surv(week_survival, survival_status) ~ Group, data = per_snail)
 
 km_plot <- ggsurvplot(
-  sf_km, data = per_snail, conf.int = TRUE,
+  sf_km, data = per_snail, conf.int = TRUE,conf.int.alpha = 0.2,
   risk.table = TRUE, risk.table.height = 0.22,
   ggtheme = theme_minimal(base_size = 10), 
-  xlab = "Time (weeks)", 
+  xlab = "Weeks", 
   ylab = "Survival Probability",
   legend.title = "Treatment",
-  legend.labs = c("Control", "Seasoned Macro", "Virgin Macro"),
-  palette = c("green", "orange", "darkgray"),
+  legend.labs = c("Control", "Biofouled Macro", "Virgin Macro"),
+  palette = c("#6baf78", "#a5855f", "#8a8a8a"),
   xlim = c(0, 13),           
   break.time.by = 1 
 )
@@ -429,8 +458,10 @@ p_strat <- ggplot() +
   theme_minimal(base_size = 10)
 
 # plots!
-(km_plot$plot)
+(km_plot$plot)# Save the plot to a PNG file
+ggsave(filename = "R2_survival_plot_grouped.png", plot = km_plot$plot, bg = "white", path = "/Users/aoyu/Desktop/Snail_Data/Outputs", width = 9, height = 6, dpi = 300)
 (km_plot$table)
+ggsave(filename = "R2_survival_plot_grouped_num_at_risk.png", plot = km_plot$table, bg = "white", path = "/Users/aoyu/Desktop/Snail_Data/Outputs", width = 9, height = 6, dpi = 300)
 (p_cox)
 (p_overlay) # why macro+ micro not starts at week 1? 
 (p_strat) # why macro+ micro not starts at week 1? 

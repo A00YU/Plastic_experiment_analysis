@@ -9,10 +9,11 @@ library(glm2)
 library(tidyr)
 library(dplyr)
 library(ggplot2)
-library(survRM2)
+library(broom)
+library(modelsummary)
 
 ####### load data#########
-source("R1_data_cleaning.R") # cleaned master data sheet called all_data
+source("/Users/aoyu/Desktop/Snail_Data/R1_data_cleaning.R") # cleaned master data sheet called all_data
 
 ####### build survival df #########
 # Helper fxn to gather the weekly "Adult_death_k" and "Week_of_death_k" into long 
@@ -63,27 +64,27 @@ per_snail <- last_seen %>%
     Treatment = factor(Treatment, levels = c("Control","Micro","Macro","Macro+Micro"))
   )
 
-# Snails per jar (should be constant 3)
-(per_snail %>% count(jar_id, name = "n_snails") %>% summarise(min=min(n_snails), median=median(n_snails), max=max(n_snails)))
-
-# weeks survival
-(per_snail %>% count(week_survival) %>% arrange(week_survival) %>% head(15))
+# # Snails per jar (should be constant 3)
+# (per_snail %>% count(jar_id, name = "n_snails") %>% summarise(min=min(n_snails), median=median(n_snails), max=max(n_snails)))
+# 
+# # weeks survival
+# (per_snail %>% count(week_survival) %>% arrange(week_survival) %>% head(15))
 
 
 ####### Cox survival models #########
 # Cluster-robust Cox (jar-level clustering)
 fit_cr <- coxph(Surv(week_survival, survival_status) ~ Treatment + cluster(jar_id),
-                data = per_snail, ties = "efron")
+                data = per_snail)
 
 # Fixed-effects Cox (for PH tests and baseline comparison)
 fit_fix <- coxph(Surv(week_survival, survival_status) ~ Treatment,
-                 data = per_snail, ties = "efron")
+                 data = per_snail)
 
 # Random-effects Cox (frailty) — optional model comparison
 fit_re  <- coxme(Surv(week_survival, survival_status) ~ Treatment + (1|jar_id),
                  data = per_snail)
 
-(summary(fit_cr))
+# (summary(fit_cr))
 (summary(fit_fix)) # no jar-level random effect
 
 # boundary issues make LRT conservative; report AIC
@@ -91,7 +92,18 @@ fit_re  <- coxme(Surv(week_survival, survival_status) ~ Treatment + (1|jar_id),
 (AIC(fit_re))
 anova(fit_fix, fit_re) 
 
+# Saves model results as a CSV
+R1_survival_model <- data.frame(
+  term = c("Virgin Micro", "Weathered Macro", "Weathered Macro + Virgin Micro"),
+  estimate = c(-0.59866, 0.08431, -0.56274),
+  HR = c(0.54955, 1.08797, 0.56965),
+  percent.reduction = c(1-0.54955, 1-1.08797, 1-0.56965),
+  standard.error = c(0.16739, 0.22897,0.28671),
+  p.value = c(0.000348,0.712703, 0.049679))
+
+write.csv(R1_survival_model,  file = "/Users/aoyu/Desktop/Snail_Data/Outputs/R1_survival_model.csv")
 ####### pairwise comparisons HRs #########
+
 # pairwise HRs with robust vcov for coxph (clustered)
 Vrob <- sandwich::sandwich(fit_cr)   
 
@@ -110,24 +122,25 @@ pairs_adj <- pw_ci %>%
   dplyr::mutate(
     # emmeans on a Cox PH uses log-HR with the internal "A - B" direction
     HR      = exp(-estimate),                       # report B vs A
-    HR_low  = exp(-.data[[upper_name]]),
-    HR_high = exp(-.data[[lower_name]]),
+    HR.low  = exp(-.data[[upper_name]]),
+    HR.high = exp(-.data[[lower_name]]),
     A = sub(" - .*", "", contrast),
     B = sub(".* - ", "", contrast),
     label = sprintf("%s vs %s", B, A),
-    perc_reduction = 1 - HR
+    percent.reduction = 1 - HR
   ) %>%
-  dplyr::select(label, HR, HR_low, HR_high, p.value, perc_reduction) %>%
-  arrange(p.value)
+  dplyr::select(label, estimate,
+                SE, HR, HR.low, HR.high, p.value) 
 
 # Pairwise HRs (Tukey-adjusted; robust vcov; B vs A)
-(pairs_adj)
+pairs_adj 
+write.csv(pairs_adj,  file = "/Users/aoyu/Desktop/Snail_Data/Outputs/R1_survival_pairwise.csv")
 
 ####### Cox model diagnostics #########
 # porportional hazard assumption met?
 ph_test <- cox.zph(fit_fix)
 # Global and term-wise Schoenfeld PH tests (fixed-effects model)
-(ph_test) # violated with p < 0.05
+(ph_test) # met proportional hazard assumption with p > 0.05
 
 ####### plot survival curves #########
 # Surv Curves: KM (Kaplan-Meier estimator) by treatment, Cox-predicted (cluster-robust), stratified Cox (diagnostic)
@@ -137,11 +150,11 @@ km_plot <- ggsurvplot(
   sf_km, data = per_snail, conf.int = TRUE,
   risk.table = TRUE, risk.table.height = 0.22,
   ggtheme = theme_minimal(base_size = 10), 
-  xlab = "Time (weeks)", 
+  xlab = "Weeks", 
   ylab = "Survival Probability",
   legend.title = "Treatment",
-  legend.labs = c("Control", "Micro", "Macro", "Macro + Micro"),
-  palette = c("green", "yellow", "orange", "darkgray"),
+  legend.labs = c("Control", "Virgin Micro", "Biofouled Macro", "Biofouled Macro + Virgin Micro"),
+  palette = c("#6baf78", "#5a9fd6", "#a5855f", "#9d7ca5"),
   xlim = c(0, 13),           
   break.time.by = 1 
 )
@@ -181,7 +194,7 @@ km_df <- df_km; km_df$Source  <- "KM"
 cx_df <- cox_df; cx_df$Source <- "Cox"
 overlay_df <- bind_rows(km_df, cx_df)
 
-p_overlay <- ggplot(overlay_df, aes(time, surv, color = Source, linetype = Source)) +
+p_overlay <- ggplot2::ggplot(overlay_df, aes(time, surv, color = Source, linetype = Source)) +
   geom_step() +
   geom_ribbon(aes(ymin = lower, ymax = upper, fill = Source),
               alpha = 0.12, colour = NA) +
@@ -207,13 +220,16 @@ p_strat <- ggplot() +
 
 # plots!
 (km_plot$plot)
+# Save the plot to a PNG file
+ggsave(filename = "R1_survival_plot.png", plot = km_plot$plot, bg = "white", path = "/Users/aoyu/Desktop/Snail_Data/Outputs", width = 9, height = 6, dpi = 300)
 (km_plot$table)
-(p_cox)
-(p_overlay) # why macro+ micro not starts at week 1? 
-(p_strat) # why macro+ micro not starts at week 1? 
+ggsave(filename = "R1_survival_plot_num_at_risk.png", plot = km_plot$table, bg = "white", path = "/Users/aoyu/Desktop/Snail_Data/Outputs", width = 9, height = 6, dpi = 300)
+# (p_cox)
+# (p_overlay) # why macro+ micro not starts at week 1? 
+# (p_strat) # why macro+ micro not starts at week 1? 
 
 ####### RMST (restricted mean survival time) #########
-# RMST since PH not met (primary estimand), τ = 13 weeks
+# RMST since porportional hazard assumption not met (primary estimand), τ = 13 weeks
 tau <- 13  # common follow-up window; adjust as needed/wanted
 
 # pairwise comparisons for RMST
@@ -259,7 +275,7 @@ rmst_pairwise <- purrr::map_dfr(pair_levels, function(lv) {
     mutate(grp = factor(Treatment, levels = c(lv1, lv2)))  # lv1 = 0, lv2 = 1
   gnum <- as.integer(subdat$grp == lv2)
   
-  fit <- rmst2(time = subdat$week_survival, status = subdat$survival_status, arm = gnum, tau = tau)
+  fit <- survRM2::rmst2(time = subdat$week_survival, status = subdat$survival_status, arm = gnum, tau = tau)
   vals <- robust_extract(fit)
   
   tibble::tibble(
@@ -314,7 +330,7 @@ boot_CI <- quantile(boot_HR, c(0.025, 0.975), na.rm = TRUE)
 
 #Clusters (jars) by trmnt
 (per_snail %>% distinct(jar_id, Treatment) %>% count(Treatment))
-
+  
 ######## death by week and treatment plot #########
 
 # Deaths table by week and treatment
@@ -330,8 +346,8 @@ death_table
 
 # Convert week_of_deadth to numeric for plotting (excluding "alive")
 death_table <- death_table %>%
-  filter(week_of_death != "alive") %>%
-  mutate(week_of_death = as.numeric(week_of_death))
+  filter(week_of_death != "alive") %>% 
+  mutate(week_of_death = as.numeric(as.character(week_of_death)))
 
 # Reshape the data for plotting
 death_long <- death_table %>%
@@ -344,25 +360,39 @@ ggplot(death_long, aes(x = week_of_death, y = deaths, color = Treatment)) +
   labs(title = "Number of Deaths per Week by Color",
        x = "Week of Death",
        y = "Number of Deaths") +
+  scale_x_continuous(breaks = seq(0, 13, by = 1)) +
   theme_minimal()
 
 # Calculate the total number of snails at the start for each color
-total_snails <- per_snail %>%
-  group_by(Treatment) %>%
-  summarise(total = n(), .groups = 'drop')
+Treatment <- c("Control", "Micro", "Macro", "Macro+Micro")
+total <- c(225, 225, 54, 54)
+
+# Create a data frame using these vectors
+total_snails <- data.frame(Treatment, total)
 
 # Merge with total snails to calculate relative deaths
 death_long <- death_long %>%
   left_join(total_snails, by = "Treatment") %>%
+  group_by(Treatment) %>%
+  mutate(cumulative_death = cumsum(deaths)) 
+
+death_long <- death_long %>%
   mutate(relative_deaths = deaths / total)
 
 # Plot relative death
-ggplot(death_long, aes(x = week_of_death, y = relative_deaths, color = Treatment)) +
+relative_death <- ggplot(death_long, aes(x = week_of_death, y = relative_deaths, color = Treatment)) +
   geom_line() +
   geom_point() +
-  labs(title = "Relative Number of Deaths per Week by Color",
-       x = "Week of Death",
-       y = "Relative Number of Deaths") +
+  labs(x = "Weeks",
+       y = "Relative Deaths") +
   scale_x_continuous(breaks = seq(0, 13, by = 1)) +
+  scale_color_manual(values = c("Control" = "#6baf78", 
+                                "Micro" = "#5a9fd6", 
+                                "Macro" = "#a5855f", 
+                                "Macro+Micro" = "#9d7ca5"),
+                     labels = c("Control", 
+                                "Virgin Micro", 
+                                "Weathered Macro", 
+                                "Weathered Macro + Virgin Micro")) +
   theme_minimal()
-
+  ggsave(filename = "R1_survival_plot_relative_death.png", plot = relative_death, bg = "white", path = "/Users/aoyu/Desktop/Snail_Data/Outputs", width = 9, height = 6, dpi = 300)

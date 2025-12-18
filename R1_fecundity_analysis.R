@@ -11,17 +11,19 @@ library(dplyr)
 library(ggplot2)
 library(mgcv)
 library(car)
+library(broom)
+library(modelsummary)
 
 ####### load data#########
-source("R1_data_cleaning.R") # cleaned master data sheet called all_data
+source("/Users/aoyu/Desktop/Snail_Data/R1_data_cleaning.R") # cleaned master data sheet called all_data
 all_data_repro <- all_data[all_data$Week_num != 1, ]  # Remove week 1 data
-all_data_repro <- all_data_repro %>% select(Jar_num, Color, Week_num, Total_egg_mass_num, Adult_death_1, Adult_death_2, Adult_death_3, Treatment)
+all_data_repro <- all_data_repro %>% select(Jar_num, Color, Week_num, Total_egg_mass_num, Enrolled_egg_num, Adult_death_1, Adult_death_2, Adult_death_3, Treatment)
 all_data_repro$total_egg_mass_num <- as.numeric(all_data_repro$Total_egg_mass_num)
 
 ####### Reproductive output analysis at the jar level #########
 # distribution check
-hist(all_data_repro$total_egg_mass_num, breaks = 10, col = "lightblue", border = "black",
-     main = "Histogram", xlab = "egg mass num per jar", ylab = "counts")
+# hist(all_data_repro$total_egg_mass_num, breaks = 10, col = "lightblue", border = "black",
+     # main = "Histogram", xlab = "egg mass num per jar", ylab = "counts")
 
 # Calculate Spearman's correlation bewteen snail number and egg mass number
 # Add a new column 'snails_num' 
@@ -42,19 +44,61 @@ variance_value <- var(all_data_repro$total_egg_mass_num)
 cat("Mean of total_egg_mass_num:", mean_value, "\n")
 cat("Variance of total_egg_mass_num:", variance_value, "\n") # Variance >> Mean, making it better suited for over dispersed data
 
+# add prevous week's snail size as covariate to control for
+source("/Users/aoyu/Desktop/Snail_Data/R1_growth_analysis.R") # cleaned master data sheet called all_data_growth
+covariate <- all_data_growth_length_covariate %>% select(Jar_num, Color, Week_num, prev_snail_length_avg)
+all_data_repro <- merge(all_data_repro, covariate, by = c("Jar_num", "Color", "Week_num"), all.x = TRUE)
+all_data_repro <- all_data_repro %>% filter(!is.na(prev_snail_length_avg)) # 124 missing prev_snail_length_avg
+
+# what if use enrolled eggs to proximate eggs per mass to get total eggs 
+# all_data_repro <- all_data_repro %>% mutate(Enrolled_egg_num = if_else(is.na(Enrolled_egg_num), 0, Enrolled_egg_num),
+#                                             total_egg_mass_num = total_egg_mass_num * Enrolled_egg_num)
+
+# check estimated eggs per mass differences among treatments
+anova_egg_per_mass <-aov(Enrolled_egg_num ~ Treatment, data = all_data_repro)
+summary(anova_egg_per_mass)
+TukeyHSD(anova_egg_per_mass)
+
 # Negative Binomial Model for egg mass counts (glmmTMB package)
-reproduction_model <- glmmTMB(total_egg_mass_num ~ Treatment + Week_num , family = nbinom2, data = all_data_repro) # (1|jar) account for jar-specific variability over time
+reproduction_model <- glmmTMB(total_egg_mass_num ~ Treatment + prev_snail_length_avg + (1| Jar_num), family = nbinom2, data = all_data_repro) # (1|jar) account for jar-specific variability over time
 summary(reproduction_model)
 
-reproduction_model_snail_num <- glmmTMB(total_egg_mass_num ~ Treatment + Week_num + snails_num , family = nbinom2, data = all_data_repro)
+reproduction_model_snail_num <- glmmTMB(total_egg_mass_num ~ Treatment + prev_snail_length_avg + snails_num + (1| Jar_num), family = nbinom2, data = all_data_repro)
 summary(reproduction_model_snail_num)
 
-anova(reproduction_model_snail_num, reproduction_model) # the number of snails does have an impact on egg mass production, even if the correlation coefficient is low.
+anova(reproduction_model_snail_num, reproduction_model) # the number of snails does have an impact on egg mass production
+
+reproduction_model_snail_num_fix <- glmmTMB(total_egg_mass_num ~ Treatment + prev_snail_length_avg + snails_num, family = nbinom2, data = all_data_repro)
+summary(reproduction_model_snail_num_fix)
+
+anova(reproduction_model_snail_num, reproduction_model_snail_num_fix) # random effect model better
 
 pairwise_comparisons_repro <- emmeans(reproduction_model_snail_num, pairwise ~ Treatment)
 # # Summarize pairwise comparisons
 summary(pairwise_comparisons_repro)
+# mannual data entry instead
+# R1_fecundity_pairwise <- data.frame(
+#   term = c("Virgin Micro - (Weathered Macro + Virgin Micro)", 
+#            "Control - (Weathered Macro + Virgin Micro)", 
+#            "Weathered Macro - (Weathered Macro + Virgin Micro)", 
+#            "Virgin Micro - Weathered Macro",
+#            "Control - Weathered Macro", "Control - Virgin Micro"),
+#   estimate = c(-0.1986, -0.1848, -0.1584 , -0.0402, -0.0264, 0.0138),
+#   standard.error = c(0.0480, 0.0481, 0.0624, 0.0492, 0.0489, 0.0297),
+#   exp.estimate = c(exp(-0.1986), exp(-0.1848), exp(-0.1584), exp(-0.0402), exp(-0.0264), exp(0.0138)),
+#   p.value = c(0.0002,0.0007, 0.0543, 0.8467, 0.9492, 0.9671))
+
+# write.csv(R1_fecundity_pairwise,  file = "/Users/aoyu/Desktop/Snail_Data/Outputs/R1_fecundity_pairwise.csv")
+
 summary(reproduction_model_snail_num)
+R1_fecundity_model <- data.frame(
+  term = c("Virgin Micro", "Biofouled Macro", "Biofouled Macro + Virgin Micro", "Snail Shell Length Avg per Jar", "Number of Snails per Jar"),
+  estimate = c(-0.01562, 0.01476, 0.18878 , 1.38546, 0.17769),
+  standard.error = c(0.02974, 0.04894, 0.04790, 0.13936, 0.02464),
+  exp.estimate = c(exp(-0.01562), exp(0.01476), exp(0.18878), exp(1.38546), exp(0.17769)),
+  p.value = c(0.599,0.763, 8.11e-05, "< 2e-16", 5.48e-13))
+
+write.csv(R1_fecundity_model,  file = "/Users/aoyu/Desktop/Snail_Data/Outputs/R1_fecundity_model.csv")
 
 ####### Visualization of reproductive output #########
 # Summarize the data by Color and Week_num to calculate mean and 95% CI
@@ -71,59 +115,25 @@ repro_summary <- all_data_repro %>%
   ungroup()
 
 # Plot across weeks
-ggplot(repro_summary, aes(x = Week_num, y = mean_repro, color = Treatment, group = Treatment)) +
+R1_fecundity_plot <- ggplot(repro_summary, aes(x = Week_num, y = mean_repro, color = Treatment, group = Treatment)) +
   geom_line() +  # add line connecting dots for each Color group
   geom_point(size = 3) +
   geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper), width = 0.2) +
   # geom_smooth(method = "loess", se = FALSE) +
   # geom_smooth(method = "loess", se = TRUE, aes(fill = Treatment), alpha = 0.2) +  # with se
-  scale_color_manual(values = c("Control" = "green", "Micro" = "yellow", "Macro" = "orange", "Macro+Micro" = "darkgray")) +
-  scale_fill_manual(values = c("Control" = "green", "Micro" = "yellow", "Macro" = "orange", "Macro+Micro" = "darkgray")) +
+  scale_color_manual(values = c("Control" = "#6baf78", 
+                                "Micro" = "#5a9fd6", 
+                                "Macro" = "#a5855f", 
+                                "Macro+Micro" = "#9d7ca5"),
+                     labels = c("Control", 
+                                "Virgin Micro", 
+                                "Biofouled Macro", 
+                                "Biofouled Macro + Virgin Micro")) +
   scale_x_continuous(breaks = 1:13, labels = 1:13)+
   labs(
-    x = "Week Number",
-    y = "Mean Total Egg Mass Number",
-    title = "Fecundity Over Time by Treatment"
-  ) +
+    x = "Weeks",
+    y = "Mean Total Number of Egg Mass per Jar") +
   theme_minimal()
 
-# plot and summary statistics across time masks true variation and could be missleading:
-# install.packages("geomViolinDiscrete") # unable to install; " package ‘geomViolinDiscrete’ is not available for this version of R"
-# # library("geomViolinDiscrete")
-# library(ggsignif)
-
-# # Plot the raw data using a violin plot
-# ggplot(all_data_repro, aes(x = factor(Color, levels = c("G", "Y", "O", "W")), y = total_egg_mass_num, fill = Color)) +
-#   geom_violin(trim = FALSE, draw_quantiles = c(0.25, 0.5, 0.75), color = "black") + 
-#   # geom_jitter(width = 0.1, alpha = 0.4, color = "darkblue") +  # Add individual data points
-#   theme_minimal() +  # Clean theme
-#   labs(title = "Egg Mass Counts by Treatment Group",
-#        x = "Treatment Group",
-#        y = "Total Egg Mass Count",
-#        fill = "Treatment Group") +
-#   scale_x_discrete(labels = c("O" = "Macroplastic", "Y" = "Microplastic", "W" = "Microplastic & Macroplastic", "G" = "Negative Control")) +
-#   scale_fill_manual(values = c("O" = "orange", "Y" = "yellow", "W" = "darkgray", "G" = "green")) + 
-#   stat_summary(fun = "mean", geom = "point", shape = 18, size = 3, color = "black")  + # Add mean points
-#   geom_signif(comparisons = list(c("G", "Y"), c("G", "O"), c("G", "W") ), # Add manual pair-wise comparisons
-#               annotations = c("***", "**", "*"),  # p-value stars here
-#               y_position = c(29, 34, 39),         # adjust y positions 
-#               tip_length = 0,
-#               bracket.size = 0)
-# 
-# #box plot:
-# ggplot(all_data_repro, aes(x = factor(Color, levels = c("G", "Y", "O", "W")), y = total_egg_mass_num, fill = Color)) +
-#   geom_boxplot(outlier.colour = "black", outlier.shape = 16, outlier.size = 2, 
-#                notch = FALSE, width = 0.7) +  # Box plot with specified aesthetics
-#   # geom_jitter(width = 0.1, alpha = 0.4, color = "darkblue") +  # Uncomment to add individual data points
-#   theme_minimal() +  # Clean theme
-#   labs(title = "Egg Mass Counts by Treatment Group",
-#        x = "Treatment Group",
-#        y = "Total Egg Mass Count",
-#        fill = "Treatment Group") +
-#   scale_x_discrete(labels = c("O" = "Macroplastic", "Y" = "Microplastic", "W" = "Microplastic & Macroplastic", "G" = "Negative Control")) +
-#   scale_fill_manual(values = c("O" = "orange", "Y" = "yellow", "W" = "darkgray", "G" = "green"))+
-#   geom_signif(comparisons = list(c("G", "Y"), c("G", "O"), c("G", "W")), # Add manual pair-wise comparisons
-#               annotations = c("***", "**", "*"),  # p-value stars here
-#               y_position = c(28, 30, 32),         # adjust y positions 
-#               tip_length = 0,
-#               bracket.size = 0)
+# Save the plot to a PNG file
+ggsave(filename = "R1_fecundity_plot.png", plot = R1_fecundity_plot, bg = "white", path = "/Users/aoyu/Desktop/Snail_Data/Outputs", width = 9, height = 6, dpi = 300)

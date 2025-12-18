@@ -11,14 +11,15 @@ library(dplyr)
 library(ggplot2)
 library(ggsignif)
 library(mgcv)
-library(patchwork)
+library(broom)
+library(modelsummary)
 
 ####### load data#########
-source("R1_data_cleaning.R") # cleaned master data sheet called all_data
+source("/Users/aoyu/Desktop/Snail_Data/R1_data_cleaning.R") # cleaned master data sheet called all_data
 
-####### Offspring hatching analysis #########
 all_data_hatch <- all_data %>% 
-  filter(Week_num != 1) %>% # Remove week 1 given no eggs yet
+  filter(Week_num != 1) %>% # Remove week 1 given no eggs yet 
+  filter(Week_num != 13) %>% # & 13 with no hatching check
   select(Jar_num, Color, Week_num, Total_egg_mass_num, Enrolled_egg_num, Unhatched_egg_num, Hatch_check_1, Hatch_check_2, Treatment,Adult_death_1, Adult_death_2, Adult_death_3)%>%  
   mutate(Hatch_check_1 = as.numeric(Hatch_check_1), Hatch_check_2 = as.numeric(Hatch_check_2))
 
@@ -32,7 +33,7 @@ all_data_hatch$Hatch_check_2[is.na(all_data_hatch$Hatch_check_2)] <- 0
 
 # Check for missing or problematic values (aim to enroll around 10 eggs & we see median = 10)
 summary(all_data_hatch$Enrolled_egg_num) # enrolled num
-summary(all_data_hatch$Unhatched_egg_num) # enrolled and unhatched (sometimes a few snails are already hatched before enrolled)
+summary(all_data_hatch$Unhatched_egg_num) # enrolled and unhatched (sometimes a few snails are already hatched before enrolled over night)
 summary(all_data_hatch$Hatch_check_1) # hatched num at w1 check point
 summary(all_data_hatch$Hatch_check_2) # hatched num at w3 check point (2nd check point)
 
@@ -43,7 +44,7 @@ summary(all_data_hatch$Hatch_check_2) # hatched num at w3 check point (2nd check
 #Among those who COULD hatch, meaning with a viable structure:
 #check for measurement error:
 #negative values are spoted, where some of the "un-hatcheables" are hatched.
-count(all_data_hatch, Unhatched_egg_num - Hatch_check_1 - Hatch_check_2 < 0) # 11/(2221+11) mistakes = error rate 0.5%; ~1.00% error rate if assuming it is same likelihood to misjudge an egg to be alive or dead
+count(all_data_hatch, Unhatched_egg_num - Hatch_check_1 - Hatch_check_2 < 0) # 9/(2143+9) mistakes = error rate 0.4%; ~0.8% error rate if assuming it is same likelihood to misjudge an egg to be alive or dead
 # head(all_data_hatch %>% filter(Unhatched_egg_num - Hatch_check_1 - Hatch_check_2 < 0))
 
 # make sure that the number of enrolled eggs is greater than or equal to the number of unhatched eggs
@@ -54,6 +55,7 @@ all_data_hatch <- all_data_hatch %>%
   filter(Enrolled_egg_num >= Unhatched_egg_num & Enrolled_egg_num > 0) 
 all_data_hatch <- rbind(all_data_hatch, valid_0) # add back the valid 0 hatch rate data
 
+####### Offspring hatch success analysis #########
 # Perform the calculation for hatch success 
 all_data_hatch$hatch <- all_data_hatch$Enrolled_egg_num - all_data_hatch$Unhatched_egg_num + all_data_hatch$Hatch_check_1 + all_data_hatch$Hatch_check_2
 all_data_hatch$unhatch <- pmax(0, all_data_hatch$Unhatched_egg_num - all_data_hatch$Hatch_check_1 - all_data_hatch$Hatch_check_2)
@@ -74,26 +76,72 @@ cat("Variance :", variance_value, "\n") # Variance < Mean
 
 all_data_hatch$snails_num <- rowSums(all_data_hatch[, c("Adult_death_1", "Adult_death_2", "Adult_death_3")] == 0)
 
+# estimate eggs per mass among treatments per weeks
+egg_per_mass_estimates<- all_data_hatch %>% filter(Enrolled_egg_num != 0) %>% group_by(Treatment, Week_num) %>% summarise(egg_per_mass = median(Enrolled_egg_num)) #slight variation
+
+# egg_per_mass_estimates<- all_data_hatch %>% filter(Enrolled_egg_num != 0) %>% group_by(Treatment) %>% summarise(egg_per_mass = median(Enrolled_egg_num)) # avg of 11 eggs per mass across treatments
+ggplot(egg_per_mass_estimates, aes(x = Week_num, y = egg_per_mass, color = Treatment)) +
+  geom_line() +
+  geom_point()+
+  scale_x_continuous(breaks = 1:12, labels = 1:12)
+
+# save egg/mass as a variable for expected reproductive output model
+write.csv(egg_per_mass_estimates,  file = "/Users/aoyu/Desktop/Snail_Data/FinalOutputs/R1_egg_per_mass_estimates.csv")
+
+# add prevous week's snail size as covariate to control for
+source("/Users/aoyu/Desktop/Snail_Data/R1_growth_analysis.R") # cleaned master data sheet called all_data_growth
+covariate <- all_data_growth_length_covariate %>% select(Jar_num, Color, Week_num, prev_snail_length_avg)
+all_data_hatch <- merge(all_data_hatch, covariate, by = c("Jar_num", "Color", "Week_num"), all.x = TRUE)
+all_data_hatch <- all_data_hatch %>% filter(!is.na(prev_snail_length_avg)) # 116 missing prev_snail_length_avg
+
 # binomial model with zero inflation
-hatch_model_withWeek_num <- glmmTMB( cbind(hatch, unhatch) ~ Treatment + Week_num +  snails_num ,
-                                     ziformula = ~Treatment + Week_num +  snails_num,
+hatch_model <- glmmTMB( cbind(hatch, unhatch) ~ Treatment + prev_snail_length_avg +  snails_num,
+                                     ziformula = ~Treatment + prev_snail_length_avg +  snails_num,
                                      family = binomial, data = all_data_hatch)
 
-hatch_model <- glmmTMB( cbind(hatch, unhatch) ~ Treatment +  snails_num ,
-                        ziformula = ~Treatment +  snails_num,
+hatch_model_base <- glmmTMB( cbind(hatch, unhatch) ~ Treatment + prev_snail_length_avg,
+                        ziformula = ~Treatment + prev_snail_length_avg,
                         family = binomial, data = all_data_hatch)
 
-anova(hatch_model_withWeek_num, hatch_model)
-# smaller the AIC the better, so the model with parent age is better
+hatch_model_rm <- glmmTMB( cbind(hatch, unhatch) ~ Treatment + prev_snail_length_avg +  snails_num + (1|Jar_num),
+                        ziformula = ~Treatment + prev_snail_length_avg +  snails_num + (1|Jar_num),
+                        family = binomial, data = all_data_hatch)
+
+AIC(hatch_model, hatch_model_base) # hatch_model with snail_num is better
+AIC(hatch_model, hatch_model_rm) 
 
 # Summary of the model
-summary(hatch_model_withWeek_num)
+summary(hatch_model_rm)
+# mannual data entry
+
+# R1_hatch_model <- data.frame(
+#   term = c("Virgin Micro", "Weathered Macro", "Weathered Macro + Virgin Micro", "Snail Shell Length Avg per Jar", "Number of Snails per Jar"),
+#   estimate = c(-0.094980, -0.099884, 0.005612 , -2.734268, -0.086147),
+#   standard.error = c(0.051304, 0.088186, 0.090227, 0.251424, 0.048805),
+#   exp.estimate = c(exp(-0.094980), exp(-0.099884), exp(0.005612), exp(-2.734268), exp(-0.086147)),
+#   p.value = c(0.0641,0.2574, 0.9504, "< 2e-16", 0.0775))
+# 
+# write.csv(R1_hatch_model,  file = "/Users/aoyu/Desktop/Snail_Data/Outputs/R1_hatch_model.csv")
 
 # # Post-hoc comparisons (emmeans)
-emmeans_hatch <- emmeans(hatch_model_withWeek_num, pairwise ~ Treatment)
+emmeans_hatch <- emmeans(hatch_model_rm, pairwise ~ Treatment)
 summary(emmeans_hatch)
 
-######## Plot #########
+# mannual data entry
+# R1_hatch_pairwise <- data.frame(
+#   term = c("Control - Virgin Micro","Control - Weathered Macro",
+#            "Control - (Weathered Macro + Virgin Micro)",
+#            "Virgin Micro - Weathered Macro",
+#            "Virgin Micro - (Weathered Macro + Virgin Micro)", 
+#            "Weathered Macro - (Weathered Macro + Virgin Micro)"),
+#   estimate = c(0.09498, 0.09988, -0.00561 , 0.00490, -0.10059, 0.10550),
+#   standard.error = c(0.0513, 0.0882, 0.0902, 0.0879, 0.0900, 0.1170),
+#   exp.estimate = c(exp(0.09498), exp(0.09988), exp(-0.00561), exp(0.00490), exp(-0.10059), exp(0.10550)),
+#   p.value = c(0.2494,0.6693, 0.9999, 0.9999, 0.6786, 0.8029))
+# 
+# write.csv(R1_hatch_pairwise,  file = "/Users/aoyu/Desktop/Snail_Data/Outputs/R1_hatch_pairwise.csv")
+
+######## Plot hatch success #########
 # Summarize the data by Color and Week_num to calculate mean and 95% CI
 fitness_summary <- all_data_hatch %>%
   group_by(Treatment, Week_num) %>%
@@ -108,21 +156,29 @@ fitness_summary <- all_data_hatch %>%
   ungroup()
 
 # Plot across weeks
-ggplot(fitness_summary, aes(x = Week_num, y = mean_fitness, color = Treatment, group = Treatment)) +
+R1_hatch_plot <- ggplot(fitness_summary, aes(x = Week_num, y = mean_fitness, color = Treatment, group = Treatment)) +
   geom_line() +  # add line connecting dots for each Color group
   geom_point(size = 3) +
   geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper), width = 0.2) +
   # geom_smooth(method = "loess", se = FALSE) +
   # geom_smooth(method = "loess", se = TRUE, aes(fill = Treatment), alpha = 0.2) +  # with se
-  scale_color_manual(values = c("Control" = "green", "Micro" = "yellow", "Macro" = "orange", "Macro+Micro" = "darkgray")) +
-  scale_fill_manual(values = c("Control" = "green", "Micro" = "yellow", "Macro" = "orange", "Macro+Micro" = "darkgray")) +
+  scale_color_manual(values = c("Control" = "#6baf78", 
+                                "Micro" = "#5a9fd6", 
+                                "Macro" = "#a5855f", 
+                                "Macro+Micro" = "#9d7ca5"),
+                     labels = c("Control", 
+                                "Virgin Micro", 
+                                "Biofouled Macro", 
+                                "Biofouled Macro + Virgin Micro")) +
   scale_x_continuous(breaks = 1:13, labels = 1:13)+
   labs(
-    x = "Week Number",
-    y = "Mean Hatching Success Rate",
-    title = "Offsping Fitness Over Time by Treatment"
-  ) +
+    x = "Weeks",
+    y = "Mean Hatching Success Rate per Jar",) +
   theme_minimal()
+
+
+# Save the plot to a PNG file
+ggsave(filename = "R1_hatch_plot.png", plot = R1_hatch_plot, bg = "white", path = "/Users/aoyu/Desktop/Snail_Data/FinalOutputs", width = 9, height = 6, dpi = 300)
 
 # plots with summary statistics over time masks timely variation:
 
@@ -148,82 +204,39 @@ ggplot(fitness_summary, aes(x = Week_num, y = mean_fitness, color = Treatment, g
 #               bracket.size = 0) +
 #   scale_y_continuous(limits = c(0, 1))
 
-# ============================
-# Predictions & Plots (emmeans)
-# ============================
+####### explore offspring hatch rate analysis #########
+# Perform the calculation for hatch rate 
+all_data_hatch$hatch_t1 <- all_data_hatch$Enrolled_egg_num - all_data_hatch$Unhatched_egg_num + all_data_hatch$Hatch_check_1 
+all_data_hatch$hatch_t2 <- all_data_hatch$Hatch_check_2
+all_data_hatch$unhatch_t1 <- pmax(0, all_data_hatch$Unhatched_egg_num - all_data_hatch$Hatch_check_1)
+all_data_hatch$hatch_rate_t1 <- all_data_hatch$hatch_t1 / all_data_hatch$Enrolled_egg_num 
+all_data_hatch$hatch_rate_t2 <- all_data_hatch$hatch_t2 / all_data_hatch$unhatch_t1
 
-# Get marginal means (predicted hatch success) per treatment
-emm_trt <- emmeans(hatch_model_withWeek_num, ~ Treatment, type = "response")
-emm_trt_df <- as.data.frame(emm_trt)
+# Replace NaN values with 0 in the hatch_success column (due to 0/0 computation but still valid biological 0s)
+# Replace the 9 rows of hatch rate bigger than 1 due to measurement error with 1
+all_data_hatch <- all_data_hatch %>%
+  mutate(hatch_rate_t1 = ifelse(is.nan(hatch_rate_t1), 0, hatch_rate_t1),
+         hatch_rate_t1 = ifelse(hatch_rate_t1>1, 1, hatch_rate_t1),
+         hatch_rate_t2 = ifelse(is.nan(hatch_rate_t2), 0, hatch_rate_t2),
+         hatch_rate_t2 = ifelse(hatch_rate_t2>1, 1, hatch_rate_t2))
 
-# Panel 1: Predicted means per treatment
-p1 <- ggplot(emm_trt_df, aes(x = Treatment, y = prob, color = Treatment)) +
-  geom_point(size = 3, position = position_dodge(width = 0.5)) +
-  geom_errorbar(aes(ymin = asymp.LCL, ymax = asymp.UCL),
-                width = 0.2, position = position_dodge(width = 0.5)) +
-  scale_color_manual(values = c("Control" = "green",
-                                "Micro" = "yellow",
-                                "Macro" = "orange",
-                                "Macro+Micro" = "darkgray")) +
-  labs(x = "Treatment Group",
-       y = "Predicted Hatching Success (±95% CI)",
-       title = "Predicted Offspring Hatch Success by Treatment") +
-  theme_minimal() +
-  theme(legend.position = "none")
+all_data_hatch$snails_num <- rowSums(all_data_hatch[, c("Adult_death_1", "Adult_death_2", "Adult_death_3")] == 0)
+# Biomial: number of success out of total number of trials
+# Calculate mean and variance of the dependent variable
+mean(all_data_hatch$hatch_rate_t1)
+var(all_data_hatch$hatch_rate_t1)
+mean(all_data_hatch$hatch_rate_t2)
+var(all_data_hatch$hatch_rate_t2)
+# both Variance < Mean
 
-# Panel 2: Predicted trajectories across weeks + raw boxplots
-emm_trt_week <- emmeans(hatch_model_withWeek_num,
-                        ~ Treatment | Week_num,
-                        at = list(Week_num = 1:13),  # predict for all weeks
-                        type = "response")
-emm_df_week <- as.data.frame(emm_trt_week)
+# binomial regression model with zero inflation
+hatchrate_t1 <- glmmTMB( cbind(hatch_t1, Enrolled_egg_num) ~ Treatment + prev_snail_length_avg +  snails_num ,
+                                     ziformula = ~Treatment + prev_snail_length_avg +  snails_num,
+                                     family = binomial, data = all_data_hatch)
 
-p2 <- ggplot() +
-  # raw data boxplots
-  # geom_boxplot(data = all_data_hatch,
-  #              aes(x = Week_num, y = hatch_success, 
-  #                  group = interaction(Treatment, Week_num),
-  #                  fill = Treatment),
-  #              alpha = 0.3, outlier.size = 0.5, position = position_dodge(width = 0.8)) +
-  # model predictions
-  geom_line(data = emm_df_week,
-            aes(x = Week_num, y = prob, color = Treatment, group = Treatment),
-            size = 1.2) +
-  geom_ribbon(data = emm_df_week,
-              aes(x = Week_num, ymin = asymp.LCL, ymax = asymp.UCL,
-                  fill = Treatment, group = Treatment),
-              alpha = 0.2, linetype = 0) +
-  scale_color_manual(values = c("Control" = "green",
-                                "Micro" = "yellow",
-                                "Macro" = "orange",
-                                "Macro+Micro" = "darkgray")) +
-  scale_fill_manual(values = c("Control" = "green",
-                               "Micro" = "yellow",
-                               "Macro" = "orange",
-                               "Macro+Micro" = "darkgray")) +
-  labs(x = "Week Number",
-       y = "Hatching Success",
-       title = "Predicted Hatch Success over Time (with raw boxplots)") +
-  theme_minimal()
+hatchrate_t2 <- glmmTMB( cbind(hatch_t2, unhatch_t1) ~ Treatment + prev_snail_length_avg +  snails_num ,
+                                      ziformula = ~Treatment + prev_snail_length_avg +  snails_num,
+                                      family = binomial, data = all_data_hatch)
 
-# Panel 3: Raw hatching success boxplots by treatment
-p3 <- ggplot(all_data_hatch, aes(x = Treatment, y = hatch_success, fill = Treatment)) +
-  geom_boxplot(alpha = 0.7) +
-  scale_fill_manual(values = c("Control" = "green",
-                               "Micro" = "yellow",
-                               "Macro" = "orange",
-                               "Macro+Micro" = "darkgray")) +
-  labs(x = "Treatment Group",
-       y = "Hatching Success Rate",
-       title = "Raw Offspring Hatching Success by Treatment") +
-  theme_minimal()
-
-# Combine panels
-final_plot <- p1 / p2 / p3
-print(final_plot)
-
-# ============================
-# Print marginal means table
-# ============================
-print(emm_trt_df %>% 
-        select(Treatment, prob, SE, asymp.LCL, asymp.UCL))
+summary(hatchrate_t1)
+summary(hatchrate_t2) # nothing interesting

@@ -10,6 +10,8 @@ library(tidyr)
 library(dplyr)
 library(ggplot2)
 library(mgcv)
+library(broom)
+library(modelsummary)
 
 ####### load data#########
 source("/Users/aoyu/Desktop/Snail_Data/R1_data_cleaning.R") # cleaned master data sheet called all_data
@@ -59,12 +61,22 @@ num_orientation <- sum(all_data_growth$snail_orientation_1 == 1 & all_data_growt
   sum(all_data_growth$snail_orientation_3 == 1 & all_data_growth$snail_mating_3 != 1, na.rm = TRUE)
 num_orientation # 10 snails
 
+# specifying the 17 jars (19 snails) + 6 jars to eliminate due to missing/duplicate picture or within treatment misplacement
+eliminate_jars <- data.frame(
+  Week_num = c(1, 1, 2, 2, 2, 2, 4, 4, 4, 4, 4, 4, 6, 6, 6, 6, 9, 8, 8, 9, 9, 11, 11), 
+  Color = c("W", "W", "O", "O", "O", "Y", "O", "O", "O", "O", "Y", "Y", "O", "W", "Y", "Y", "G", "G", "G", "G", "G", "G", "G"),  
+  Jar_num = c(34, 55, 16, 18, 32, 11, 3, 7, 12, 40, 35, 57, 29, 19, 39, 70, 20, 6, 67, 33, 45, 8, 11) 
+)
+
+# Filter the data frame to exclude the specified jars in the specific week, color, and jar number combinations
+all_data_growth <- all_data_growth[!with(all_data_growth, paste(Week_num, Color, Jar_num) %in% paste(eliminate_jars$Week_num, eliminate_jars$Color, eliminate_jars$Jar_num)), ]
+
 # count number of snails that have a length measurement
 num_length <- sum(!is.na(all_data_growth$Snail_length_1)) + sum(!is.na(all_data_growth$Snail_length_2)) + sum(!is.na(all_data_growth$Snail_length_3))
-num_length # 6000 snails have length measurement
+num_length # 5958 snails have length measurement
 
 # wrong orientation rate
-num_orientation / num_length # 0.001666667
+num_orientation / num_length # 0.001678416
 
 # to get the snail_length_avg for each jar at each week (including the ones with snail death)
 snail_length_avg_df <- all_data_growth %>%
@@ -138,22 +150,37 @@ outliers <- all_data_growth %>%
 
 # GAMM with Autoregressive Error Structure
 gamm_model_jar_avgerage <- gamm(weekly_growth ~ Treatment + s(prev_snail_length_avg, bs = "cs", k = 5), correlation = corAR1(), data = all_data_growth)
-summary(gamm_model_jar_avgerage$gam) # 1237 sample size
+summary(gamm_model_jar_avgerage$gam) # 1234 sample size (unit in cm)
 
-gamm_model_jar_avgerage1 <- gamm(weekly_growth ~ Treatment + s(Week_num, bs = "cs", k = 5), correlation = corAR1(), data = all_data_growth)
-summary(gamm_model_jar_avgerage1$gam) # 1237 sample size
+# Saves model results as a CSV
+R1_growth_model <- data.frame(
+  term = c("Virgin Micro", "Biofouled Macro", "Biofouled Macro + Virgin Micro"),
+  estimate = c(0.0040116, 0.0093312, 0.0051165),
+  standard.error = c(0.0011426, 0.0020414,0.0017913),
+  p.value = c(0.000463,5.34e-06, 0.004358))
 
-AIC(gamm_model_jar_avgerage$lme, gamm_model_jar_avgerage1$lme) #  prev_snail_length_avg is the better covariate
+write.csv(R1_growth_model,  file = "/Users/aoyu/Desktop/Snail_Data/Outputs/R1_growth_model.csv")
+
 # plot weekly growth
-ggplot(all_data_growth, aes(x = factor(Week_num), y = weekly_growth, color = Treatment)) +
+R1_growth_plot <- ggplot(all_data_growth, aes(x = factor(Week_num), y = weekly_growth, color = Treatment)) +
   geom_boxplot() +
-  labs(title = "Weekly Snail Growth by Treatment Group",
-       x = "Week Number",
-       y = "Average Weekly Growth per Snail",
-       color = "Treatment Group") +
-  scale_color_manual(values = c("#6baf78", "#5a9fd6", "#a5855f", "#9d7ca5")) +
+  labs(x = "Weeks",
+       y = "Mean Shell Length Growth per Snail (cm)",
+       color = "Treatment") +
+  scale_color_manual(values = c("Control" = "#6baf78", 
+                                "Micro" = "#5a9fd6", 
+                                "Macro" = "#a5855f", 
+                                "Macro+Micro" = "#9d7ca5"),
+                     labels = c("Control", 
+                                "Virgin Micro", 
+                                "Biofouled Macro", 
+                                "Biofouled Macro + Virgin Micro")) +
   theme_minimal() +
+  theme(strip.text.x = element_blank())+
   facet_wrap(~ Treatment)
+
+# Save the plot to a PNG file
+ggsave(filename = "R1_growth_plot.png", plot = R1_growth_plot, bg = "white", path = "/Users/aoyu/Desktop/Snail_Data/Outputs", width = 9, height = 6, dpi = 300)
 
 #check model Independence of Errors assumption
 gamm_resid <- resid(gamm_model_jar_avgerage$lme, type = "normalized")
@@ -167,125 +194,30 @@ abline(h = 0, col = "red")
 #check model normality of residual assumption
 qqnorm(gamm_resid, main = "Q-Q Plot of Residuals")
 
+source("/Users/aoyu/Desktop/Snail_Data/R1_data_cleaning.R") # cleaned master data sheet called all_data
+# final size and whether diff between treatment:
+randomization_check <- all_data %>% 
+  filter(Week_num == 13) %>%
+  select(Color, Jar_num, Snail_length_1, Snail_length_2, Snail_length_3) %>% 
+  filter(Color == "G"|Color == "Y" |Color ==  "W"|Color ==  "O") 
 
+table(randomization_check$Color, randomization_check$Jar_num)
 
-# ####### (re-run correction chunk before this chunk) calculate growth method 2: growth data extraction by mannual matching #########
-# # clean up the mannual matching data
-# all_data_growth$snail_matching_1 <- sub(".*_", "", all_data_growth$snail_matching_1)
-# all_data_growth$snail_matching_2 <- sub(".*_", "", all_data_growth$snail_matching_2)
-# all_data_growth$snail_matching_3 <- sub(".*_", "", all_data_growth$snail_matching_3)
-# # Convert Unidentified snails NAs with 0
-# all_data_growth$Unidentifed_1 <- as.numeric(all_data_growth$Unidentifed_1)
-# all_data_growth$Unidentifed_1 <- ifelse(is.na(all_data_growth$Unidentifed_1), 0, all_data_growth$Unidentifed_1)
-# all_data_growth$Unidentifed_2 <- as.numeric(all_data_growth$Unidentifed_2)
-# all_data_growth$Unidentifed_2 <- ifelse(is.na(all_data_growth$Unidentifed_2), 0, all_data_growth$Unidentifed_2)
-# all_data_growth$Unidentifed_3 <- as.numeric(all_data_growth$Unidentifed_3)
-# all_data_growth$Unidentifed_3 <- ifelse(is.na(all_data_growth$Unidentifed_3), 0, all_data_growth$Unidentifed_3)
-# 
-# # step 2: check the ratio of mannually identifiable to unidentifiable
-# # 92 snails unidentifiable
-# un_id <- sum(all_data_growth$Unidentifed_1==1) + sum(all_data_growth$Unidentifed_2==1) + sum(all_data_growth$Unidentifed_3==1) 
-# # 7161 snails are 0
-# id_0 <- sum(all_data_growth$Unidentifed_1==0) + sum(all_data_growth$Unidentifed_2==0) + sum(all_data_growth$Unidentifed_3==0)
-# # 558 snails from week 1 are not applicable dispite 0
-# id_0_week1 <- sum(all_data_growth$Week_num==1)*3
-# # snails that are dead are not applicable distite 0
-# id_0_dead <- sum(all_data_growth$Adult_death_1==1) + sum(all_data_growth$Adult_death_2==1) + sum(all_data_growth$Adult_death_3==1)
-# # 6603 snails are identifiable
-# id <- id_0 - id_0_week1
-# # identification rate: 
-# id/(id + un_id) # 98.6%
-# 
-# # creat a function to get growth data
-# calculate_growth <- function(data) {
-#   data <- data %>%
-#     arrange(Jar_num, Color, Week_num) %>%
-#     group_by(Jar_num, Color) %>%
-#     mutate(
-#       growth_1 = ifelse(!is.na(snail_matching_1), Snail_length_1 - case_when(
-#         snail_matching_1 == 1 ~ lag(Snail_length_1),
-#         snail_matching_1 == 2 ~ lag(Snail_length_2),
-#         snail_matching_1 == 3 ~ lag(Snail_length_3),
-#         TRUE ~ NA_real_
-#       ), NA),
-#       growth_2 = ifelse(!is.na(snail_matching_2), Snail_length_2 - case_when(
-#         snail_matching_2 == 1 ~ lag(Snail_length_1),
-#         snail_matching_2 == 2 ~ lag(Snail_length_2),
-#         snail_matching_2 == 3 ~ lag(Snail_length_3),
-#         TRUE ~ NA_real_
-#       ), NA),
-#       growth_3 = ifelse(!is.na(snail_matching_3), Snail_length_3 - case_when(
-#         snail_matching_3 == 1 ~ lag(Snail_length_1),
-#         snail_matching_3 == 2 ~ lag(Snail_length_2),
-#         snail_matching_3 == 3 ~ lag(Snail_length_3),
-#         TRUE ~ NA_real_
-#       ), NA)
-#     ) %>%
-#     ungroup()
-#   
-#   return(data)
-# }
-# 
-# all_data_growth <- calculate_growth(all_data_growth)  
-# 
-# 
-# # Transform to long format
-# all_data_growth <- all_data_growth %>%
-#   pivot_longer(
-#     cols = starts_with("growth_"),
-#     names_to = "snail_id",
-#     names_prefix = "growth_",
-#     values_to = "match_growth"
-#   ) 
-# # filtered out: 2078 NAs due to not identifiable (92) + week 1 (558) + no length:dead/mating/missing for this or previous week(1428)
-# # kept out: 1151 negative growths as 0
-# 
-# na_growth <- all_data_growth %>% filter(is.na(match_growth))
-# table(na_growth$Color, na_growth$Week_num)
-# 
-# # check negative growth due to orientation: 1151 snails
-# negative_growth <- all_data_growth %>%
-#   filter(match_growth < 0)
-# hist(negative_growth$match_growth)
-# table(negative_growth$Color, negative_growth$Week_num)
-# 
-# # include the negative growth as 0
-# all_data_growth <- all_data_growth %>%
-#   mutate(match_growth = ifelse(match_growth < 0, 0, match_growth))%>% 
-#   filter(!is.na(match_growth) & match_growth >= 0)
-# 
-# summary(all_data_growth$match_growth) 
-# table(all_data_growth$Color, all_data_growth$Week_num)
-# 
-# # GAMM analysis will only use rows that have a match_growth value
-# gamm_model <- gamm(match_growth ~ Treatment + s(Week_num, bs = "cs", k = 5), 
-#                    random = list(Jar_num = ~1), 
-#                    correlation = corAR1(), 
-#                    data = all_data_growth)
-# 
-# # You can then inspect the model:
-# summary(gamm_model$gam) # 5176 sample size
-# 
-# # plot weekly growth
-# ggplot(all_data_growth, aes(x = factor(Week_num), y = match_growth, color = Treatment)) +
-#   geom_boxplot() +
-#   labs(title = "Weekly Snail Growth by Treatment Group",
-#        x = "Week Number",
-#        y = "Average Weekly Growth per Snail",
-#        color = "Treatment Group") +
-#   scale_color_manual(values = c("green", "yellow", "orange", "darkgray")) +
-#   theme_minimal() +
-#   facet_wrap(~ Treatment)
-# 
-# #check model Independence of Errors assumption
-# gamm_resid <- resid(gamm_model$lme, type = "normalized")
-# acf(gamm_resid, main = "ACF of Residuals") # residuals are approximately independent, sufficient model adjustment
-# 
-# # check Homoscedasticity assumption: not perfect
-# plot(gamm_model$gam$fitted.values, residuals(gamm_model$gam), 
-#      xlab = "Predicted Values", ylab = "Residuals")
-# abline(h = 0, col = "red")
-# 
-# #check model normality of residual assumption: not good
-# qqnorm(gamm_resid, main = "Q-Q Plot of Residuals")
-# 
+final_size_long <- randomization_check %>%
+  pivot_longer(cols = starts_with("Snail_length_"),
+               names_to = "Snail_ID",
+               values_to = "Snail_length") %>% 
+  mutate(Snail_length = as.numeric(Snail_length))
+
+# ANOVA to check if initial snail size differs by treatment
+anova_result <- aov(Snail_length ~ Color, data = final_size_long)
+summary(anova_result) # significant difference numerically (could be due to snail picture angle), but acceptable biologically
+TukeyHSD(anova_result) # post-hoc test
+
+# Boxplot to visualize the distribution of initial snail sizes by treatment
+ggplot(final_size_long, aes(x = Color, y = Snail_length, color = Color)) +
+  geom_boxplot() +
+  labs(title = "Distribution of Initial Snail Sizes by Treatment",
+       x = "Treatment Group",
+       y = "Snail Length") +
+  theme_minimal() 
