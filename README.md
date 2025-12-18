@@ -25,7 +25,9 @@ Survival analysis
 
 Growth analysis
 
-Fecundity analysis
+Fecundity analysis (egg mass)
 
-Offspring fitness analysis
+Hatching analysis
+
+Expected reproductive output modeling (with survival, fecundity, and hatching data)
 
