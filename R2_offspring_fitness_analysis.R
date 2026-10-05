@@ -1,0 +1,546 @@
+# load library
+library(survival)
+library(coxme)
+library(survminer)
+library(lme4)
+library(glmmTMB)
+library(emmeans)
+library(glm2)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(ggsignif)
+library(mgcv)
+
+### load data#########
+source("G:/My Drive/Stanford/Research Projects/Plastic & bulinus Experiment/Snail_Data/R2_data_cleaning.R") # cleaned master data sheet called all_data
+
+all_data_hatch <- all_data_r2 %>% 
+  filter(Week_num != 1) %>% # Remove week 1 given no eggs yet
+  select(Jar_num, Color, Week_num, Total_egg_mass_num, Enrolled_egg_num, Unhatched_egg_num, Hatch_check_1, Hatch_check_2, Treatment,Adult_death_1, Adult_death_2, Adult_death_3)%>%  
+  mutate(Enrolled_egg_num = as.numeric(Enrolled_egg_num), Unhatched_egg_num = as.numeric(Unhatched_egg_num),
+         Hatch_check_1 = as.numeric(Hatch_check_1), Hatch_check_2 = as.numeric(Hatch_check_2))
+
+all_data_hatch$snails_num <- rowSums(all_data_hatch[, c("Adult_death_1", "Adult_death_2", "Adult_death_3")] == 0)
+
+table(all_data_hatch$Treatment,all_data_hatch$Week_num)
+
+plot_df_hatch_r1 <- readRDS("G:/My Drive/Stanford/Research Projects/Plastic & bulinus Experiment/Snail_Data/FinalOutputs ver2/plot_df_hatch_r1.rds") # load plot_df_hatch_r1 for joint plotting
+
+#replace all NA with 0
+all_data_hatch$Enrolled_egg_num[is.na(all_data_hatch$Enrolled_egg_num)] <- 0
+all_data_hatch$Unhatched_egg_num[is.na(all_data_hatch$Unhatched_egg_num)] <- 0
+all_data_hatch$Hatch_check_1[is.na(all_data_hatch$Hatch_check_1)] <- 0
+all_data_hatch$Hatch_check_2[is.na(all_data_hatch$Hatch_check_2)] <- 0
+
+# Check for missing or problematic values (aim to enroll around 10 eggs & we see median = 11)
+summary(all_data_hatch$Enrolled_egg_num) # enrolled num
+summary(all_data_hatch$Unhatched_egg_num) # enrolled and unhatched (sometimes a few snails are already hatched before enrolled)
+summary(all_data_hatch$Hatch_check_1) # hatched num at w1 check point
+summary(all_data_hatch$Hatch_check_2) # hatched num at w3 check point (2nd check point)
+
+# when Enrolled_egg_num = 0, Two different senarios should be considered:
+# 1) 0 egg mass to enroll = a NA hatch success, which is when Total_egg_mass_num = 0 & Enrolled_egg_num = 0, should be excluded from the study
+# 2) have some egg mass but 0 valid egg to enroll = 0 hatch rate, which is Total_egg_mass_num > 0 & Enrolled_egg_num = 0, should be included in the study 
+
+#Among those who COULD hatch, meaning with a viable structure:
+#check for measurement error:
+#negative values are spoted, where some of the "un-hatcheables" are hatched.
+count(all_data_hatch, Unhatched_egg_num - Hatch_check_1 - Hatch_check_2 < 0) # 8/(2488+8) mistakes = error rate 0.3%; ~0.6% error rate if assuming it is same likelihood to misjudge an egg to be alive or dead
+
+# make sure that the number of enrolled eggs is greater than or equal to the number of unhatched eggs
+valid_0 <- all_data_hatch %>% 
+  filter(Total_egg_mass_num > 0 & Enrolled_egg_num == 0)
+all_data_hatch <- all_data_hatch %>% 
+  filter(Enrolled_egg_num >= Unhatched_egg_num & Enrolled_egg_num > 0) 
+all_data_hatch <- rbind(all_data_hatch, valid_0) # add back the valid 0 hatch rate data
+
+# Perform the calculation for hatch success 
+all_data_hatch$hatch <- all_data_hatch$Enrolled_egg_num - all_data_hatch$Unhatched_egg_num + all_data_hatch$Hatch_check_1 + all_data_hatch$Hatch_check_2
+all_data_hatch$unhatch <- pmax(0, all_data_hatch$Unhatched_egg_num - all_data_hatch$Hatch_check_1 - all_data_hatch$Hatch_check_2)
+all_data_hatch$hatch_success <- all_data_hatch$hatch / (all_data_hatch$hatch + all_data_hatch$unhatch) 
+
+# Replace NaN values with 0 in the hatch_success column (due to 0/0 computation but still valid biological 0s)
+all_data_hatch <- all_data_hatch %>%
+  mutate(hatch_success = ifelse(is.nan(hatch_success), 0, hatch_success))
+
+# Combine Y&O into SM and W-1&W-3 into VM
+all_data_hatch$Group <- factor(with(all_data_hatch, 
+                                    ifelse(Color %in% c("Y", "O"), "Seasoned Macro",
+                                           ifelse(Color %in% c("W-1", "W-3"), "Virgin Macro","Control"))))
+
+# Select week 1 to 12 to match 12 weeks of data in Round 1 
+all_data_hatch <- all_data_hatch %>% filter(Week_num != 13)
+
+# Verify the new grouping
+table(all_data_hatch$Group, all_data_hatch$Week_num)
+
+####### Offspring hatching analysis for each treatment group with varying abundance #########
+# Biomial: number of success out of total number of trials
+hist(all_data_hatch$hatch_success)
+
+# Calculate mean and variance of the dependent variable
+mean_value <- mean(all_data_hatch$hatch_success)
+variance_value <- var(all_data_hatch$hatch_success)
+
+# Print the results
+cat("Mean :", mean_value, "\n")
+cat("Variance :", variance_value, "\n") # Variance < Mean
+
+# estimate eggs per mass among treatments per weeks
+egg_per_mass_estimates<- all_data_hatch %>% filter(Enrolled_egg_num != 0) %>% group_by(Treatment, Week_num) %>% summarise(egg_per_mass = mean(Enrolled_egg_num)) #slight variation
+
+#quick look
+# ggplot(egg_per_mass_estimates, aes(x = Week_num, y = egg_per_mass, color = Treatment)) +
+#   geom_line() +
+#   geom_point()+
+#   scale_x_continuous(breaks = 1:12, labels = 1:12)
+
+# save egg/mass as a variable for expected reproductive output model
+# write.csv(egg_per_mass_estimates,  file = "G:/My Drive/Stanford/Research Projects/Plastic & bulinus Experiment/Snail_Data/FinalOutputs ver2/R2_egg_per_mass_estimates.csv")
+
+# add prevous week's snail size as covariate to control for
+source("G:/My Drive/Stanford/Research Projects/Plastic & bulinus Experiment/Snail_Data/R2_growth_analysis.R") # cleaned master data sheet called all_data_growth
+covariate <- all_data_growth_length_covariate_r2 %>% select(Jar_num, Color, Week_num, prev_snail_length_avg)
+all_data_hatch <- merge(all_data_hatch, covariate, by = c("Jar_num", "Color", "Week_num"), all.x = TRUE)
+all_data_hatch <- all_data_hatch %>% filter(!is.na(prev_snail_length_avg))%>% mutate(jar_id = interaction(Color, Jar_num, drop = TRUE)) # 976 missing prev_snail_length_avg
+
+# define covariates: binomial model with zero inflation
+hatch_model <- glmmTMB( cbind(hatch, unhatch) ~ Treatment + prev_snail_length_avg +  snails_num,
+                        ziformula = ~Treatment + prev_snail_length_avg +  snails_num,
+                        family = binomial, data = all_data_hatch)
+
+hatch_model_base <- glmmTMB( cbind(hatch, unhatch) ~ Treatment + prev_snail_length_avg,
+                             ziformula = ~Treatment + prev_snail_length_avg,
+                             family = binomial, data = all_data_hatch)
+
+hatch_model_rm <- glmmTMB( cbind(hatch, unhatch) ~ Treatment + prev_snail_length_avg +  snails_num + (1|jar_id),
+                           ziformula = ~Treatment + prev_snail_length_avg +  snails_num + (1|jar_id),
+                           family = binomial, data = all_data_hatch)
+
+AIC(hatch_model, hatch_model_base) # hatch_model with snail_num is better
+AIC(hatch_model, hatch_model_rm) # with rm effect is better
+
+
+# All models use identical observations and conditional predictors.
+hatch_check_data <- all_data_hatch %>%
+  filter(
+    is.finite(hatch), is.finite(unhatch),
+    hatch >= 0, unhatch >= 0,
+    hatch + unhatch > 0,  # exclude records with no binomial trials
+    is.finite(prev_snail_length_avg),
+    is.finite(snails_num),
+    !is.na(Treatment), !is.na(Jar_num)
+  )
+
+# define family and model tweaking
+# Ordinary binomial
+m_bin <- update(
+  hatch_model_rm,
+  data = hatch_check_data,
+  family = binomial(link = "logit"),
+  ziformula = ~0
+)
+
+# Your existing zero-inflated binomial specification
+m_zib <- update(
+  hatch_model_rm,
+  data = hatch_check_data,
+  family = binomial(link = "logit")
+)
+
+# Beta-binomial without zero inflation
+m_bb <- update(
+  m_bin,
+  family = betabinomial(link = "logit")
+)
+
+# Beta-binomial with your existing zero-inflation specification
+m_zibb <- update(
+  m_zib,
+  family = betabinomial(link = "logit")
+)
+
+models <- list(
+  Binomial = m_bin,
+  ZI_binomial = m_zib,
+  Beta_binomial = m_bb,
+  ZI_beta_binomial = m_zibb
+)
+
+# Confirm equal sample sizes.
+stopifnot(length(unique(vapply(models, nobs, numeric(1)))) == 1L)
+
+# Check convergence before interpreting AIC.
+comparison <- data.frame(
+  model = names(models),
+  converged = vapply(
+    models, function(m) m$fit$convergence == 0, logical(1)
+  ),
+  valid_Hessian = vapply(
+    models, function(m) isTRUE(m$sdr$pdHess), logical(1)
+  ),
+  AIC = vapply(models, AIC, numeric(1)),
+  row.names = NULL
+)
+
+if (!all(comparison$converged &
+         comparison$valid_Hessian &
+         is.finite(comparison$AIC))) {
+  stop("Resolve failed model fits before interpreting the AIC comparison.")
+}
+
+comparison$delta_AIC <- comparison$AIC - min(comparison$AIC)
+comparison <- comparison[order(comparison$AIC), ]
+print(comparison) # ZI_beta_binomial best just like R1
+
+# assign best model into the pipeline
+hatch_model_rm <- m_zibb
+
+# Summary of the model
+summary(hatch_model_rm)
+
+#save into csv
+model_summary <- summary(hatch_model_rm)
+output_dir <- "G:/My Drive/Stanford/Research Projects/Plastic & bulinus Experiment/Snail_Data/FinalOutputs ver2"
+
+for (component in c("cond", "zi")) {
+  results <- model_summary$coefficients[[component]]
+  
+  write.csv(
+    data.frame(term = rownames(results), results, row.names = NULL),
+    file.path(output_dir, paste0("R2_hatch_model_", component, "_4treatment.csv")),
+    row.names = FALSE
+  )
+}
+
+### Post-hoc comparisons (emmeans) ----
+emm_cond <- emmeans(
+  hatch_model_rm,
+  ~ Treatment,
+  component = "cond" # conditional
+)
+
+pairs(emm_cond, adjust = "tukey")
+
+# save as csv
+hatch_pairs_cond <- as.data.frame(
+  summary(
+    pairs(emm_cond, adjust = "tukey"),
+    infer = c(TRUE, TRUE)  # Include 95% CIs and p-values
+  )
+)
+
+# write.csv(
+#   hatch_pairs_cond,
+#   file = "G:/My Drive/Stanford/Research Projects/Plastic & bulinus Experiment/Snail_Data/FinalOutputs ver2/R2_hatch_cond_pairwise_4treatment.csv",
+#   row.names = FALSE
+# )
+
+
+emm_zi <- emmeans(
+  hatch_model_rm,
+  ~ Treatment,
+  component = "zi" # zero-infated
+)
+
+pairs(emm_zi, adjust = "tukey")
+
+#save as csv 
+hatch_pairs_zi <- as.data.frame(
+  summary(
+    pairs(emm_zi, adjust = "tukey"),
+    infer = c(TRUE, TRUE)  # Include 95% CIs and p-values
+  )
+)
+
+# write.csv(
+#   hatch_pairs_zi,
+#   file = "G:/My Drive/Stanford/Research Projects/Plastic & bulinus Experiment/Snail_Data/FinalOutputs ver2/R2_hatch_zi_pairwise_4treatment.csv",
+#   row.names = FALSE
+# )
+
+
+### Plot marginalized hatching for each treatment with varying abundance #########
+#marginalized mean hatching fig
+# 1. Calculate the overall hatching success (combined response)
+# component = "response" automatically merges the ZI and Conditional parts
+emm_hatch <- emmeans(hatch_model_rm, ~ Treatment, component = "response")
+
+# 2. Extract the 95% Confidence Intervals
+df_95 <- as.data.frame(summary(emm_hatch, level = 0.95)) %>% rename( "lower95"="asymp.LCL",
+                                                                     "upper95"="asymp.UCL")
+
+# 3. Extract the 50% Confidence Intervals
+df_50 <- as.data.frame(summary(emm_hatch, level = 0.50)) %>% rename( "lower95"="asymp.LCL",
+                                                                     "upper95"="asymp.UCL")
+
+# 4. Merge into a single final data frame
+plot_df_hatch_r2 <- data.frame(
+  Treatment  = df_95[[1]],
+  mean_hatch = df_95[[2]],
+  lower95    = df_95[[5]],
+  upper95    = df_95[[6]],
+  lower50    = df_50[[5]],
+  upper50    = df_50[[6]]
+)
+
+# # marginalized mean egg mass per jar over a range of covariates
+# would need to read in R file R1_growth_anlysis.R to obtain the df marg_df_r1
+plot_df_hatch_r1r2 <- bind_rows(
+  "Treatment Round 1" = plot_df_hatch_r1, 
+  "Treatment Round 2" = plot_df_hatch_r2, 
+  .id = "source"
+)
+
+#label pairwise comparison with compact letter display for the conditional model
+letters_df <- data.frame(
+  Treatment = c("Control", "Micro", "Macro", "Macro+Micro", 
+                "Seasoned Macro - Low", "Seasoned Macro - High", 
+                "Virgin Macro - Low", "Virgin Macro - High"),
+  cld = c("a", "a", "a", "a", "b", "b", "a", "a") # Replace with your real letters
+)
+
+# Merge letters into your main plotting dataframe
+plot_df_hatch_r1r2 <- plot_df_hatch_r1r2 %>%
+  left_join(letters_df, by = "Treatment")
+
+treatment_order <- c(
+  "Control", 
+  "Micro", 
+  "Macro", 
+  "Macro+Micro",
+  "Seasoned Macro - Low", 
+  "Seasoned Macro - High", 
+  "Virgin Macro - Low", 
+  "Virgin Macro - High"
+)
+
+# Apply this order to your data frame
+plot_df_hatch_r1r2$Treatment <- factor(
+  plot_df_hatch_r1r2$Treatment, 
+  levels = treatment_order
+)
+
+#plot
+plot_hatch_r1r2<- ggplot(plot_df_hatch_r1r2, aes(x = Treatment, y = mean_hatch, color = Treatment)) +
+  geom_point(size = 3) +
+  geom_errorbar(
+    aes(ymin = lower50, ymax = upper50),
+    linewidth = 2.5,      # thicker than 95% CI
+    width = 0,        # can be slightly wider
+    # alpha = 0.5          # optional: slightly transparent
+  ) +
+  geom_errorbar(
+    aes(ymin = lower95, ymax = upper95),
+    linewidth = 1, width = 0.15
+  ) +
+  geom_text(aes(label = cld, y = upper95), 
+            vjust = -0.4,           # Push letters above the error bar
+            color = "black",        # Make letters black for readability
+            fontface = "bold",
+            size = 5) +
+  theme_classic() +
+  labs(
+    x = NULL,
+    y = "Marginal mean egg hatching success",
+    color = "Treatment") + # Treatment effects marginalised over growth state
+  scale_color_manual(values = c("Control" = "#6baf78", 
+                                "Micro" = "#5a9fd6", 
+                                "Macro" = "#a5855f", 
+                                "Macro+Micro" = "#9d7ca5",
+                                "Seasoned Macro - Low" = "#d4c2a8",
+                                "Seasoned Macro - High" = "#a5855f",
+                                "Virgin Macro - Low" = "#bcbcbc",
+                                "Virgin Macro - High" = "#8a8a8a")) +
+  theme(panel.spacing = unit(1.5, "lines"),
+        strip.text.x = element_text(size = 15, face = "bold", color = "black"), 
+        strip.background = element_blank(),
+        strip.placement = "outside",
+        axis.title = element_text(size = 15, face = "bold"),
+        axis.text = element_text(color = "black", size = 11),
+        legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1)
+  )+
+  facet_wrap(~source, scales = "free_x", strip.position = "bottom") +
+  scale_x_discrete(labels = c("Control"="Control", 
+                              "Micro"="Virgin Micro", 
+                              "Macro" = "Biofouled Macro", 
+                              "Macro+Micro"="Biofouled Macro\n+ Virgin Micro",
+                              "Seasoned Macro - Low" = "Biofouled Macro \n- Low",
+                              "Seasoned Macro - High" ="Biofouled Macro \n- High",
+                              "Virgin Macro - Low"="Virgin Macro \n- Low",
+                              "Virgin Macro - High"="Virgin Macro \n- High")) 
+
+plot_hatch_r1r2
+
+
+# Save the plot to a PNG file
+ggsave(filename = "R1R2_hatch_plot_marginalized_mean_seperated.png", plot = plot_hatch_r1r2, bg = "white", path = "G:/My Drive/Stanford/Research Projects/Plastic & bulinus Experiment/Snail_Data/FinalOutputs ver2", width = 9, height = 6, dpi = 300)
+
+###Plot across weeks ----
+# Summarize the data by Color and Week_num to calculate mean and 95% CI
+fitness_summary <- all_data_hatch %>%
+  group_by(Treatment, Week_num) %>%
+  summarise(
+    mean_fitness = mean(hatch_success, na.rm = TRUE),
+    sd_fitness   = sd(hatch_success, na.rm = TRUE),
+    n          = n(),
+    se         = sd_fitness / sqrt(n),
+    ci_lower   = mean_fitness - 1.96 * se,
+    ci_upper   = mean_fitness + 1.96 * se
+  ) %>%
+  ungroup()
+
+# Plot across weeks
+R2_hatch_plot_4treatments <- ggplot(fitness_summary, aes(x = Week_num, y = mean_fitness, color = Treatment, group = Treatment)) +
+  geom_line(linewidth = 1.5) +  # add line connecting dots for each Color group
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper), linewidth = 0.5, width = 0.15) +
+  # geom_smooth(method = "loess", se = FALSE) +
+  # geom_smooth(method = "loess", se = TRUE, aes(fill = Treatment), alpha = 0.2) +  # with se
+  scale_color_manual(values = c("Control" = "#6baf78", "Seasoned Macro - Low" = "#d4c2a8", "Seasoned Macro - High" = "#a5855f", "Virgin Macro - Low" = "#bcbcbc", "Virgin Macro - High" = "#8a8a8a"),
+                     labels = c("Control", 
+                                "Biofouled Macro - Low", 
+                                "Biofouled Macro - High",
+                                "Virgin Macro - Low",
+                                "Virgin Macro - High")) +
+  scale_fill_manual(values = c("Control" = "#6baf78", "Seasoned Macro - Low" = "#d4c2a8", "Seasoned Macro - High" = "#a5855f", "Virgin Macro - Low" = "#bcbcbc", "Virgin Macro - High" = "#8a8a8a")) +
+  scale_x_continuous(breaks = 1:13, labels = 1:13)+
+  labs(
+    x = "Weeks",
+    y = "Mean Hatching Success Rate per Jar",
+    color = "Treatment") +
+  theme_minimal()+ 
+  theme(legend.position = "top",
+        legend.direction = "horizontal",
+        strip.text.x = element_blank(),
+        axis.title = element_text(size = 15, face = "bold"),
+        axis.text = element_text(color = "black", size = 11),
+        legend.title = element_text(size = 10),
+        legend.text = element_text(color = "black", size = 10))
+
+R2_hatch_plot_4treatments
+# Save the plot to a PNG file
+ggsave(filename = "R2_hatch_plot_4treatments_toplegend.png", plot = R2_hatch_plot_4treatments, bg = "white", path = "G:/My Drive/Stanford/Research Projects/Plastic & bulinus Experiment/Snail_Data/FinalOutputs ver2", width = 9, height = 6, dpi = 300)
+
+### Offspring hatching analysis for grouped treatment disregarding abundance #########
+# same model applied
+
+# binomial model with zero inflation
+hatch_model_rm <-  glmmTMB(cbind(hatch, unhatch) ~
+    Group + prev_snail_length_avg + snails_num + (1 | jar_id),
+  ziformula = ~
+    Group + prev_snail_length_avg + snails_num + (1 | jar_id),
+  family = betabinomial(link = "logit"),
+  data = hatch_check_data
+)
+
+# Summary of the model
+summary(hatch_model_rm)
+
+#save into csv
+model_summary <- summary(hatch_model_rm)
+output_dir <- "G:/My Drive/Stanford/Research Projects/Plastic & bulinus Experiment/Snail_Data/FinalOutputs ver2"
+
+for (component in c("cond", "zi")) {
+  results <- model_summary$coefficients[[component]]
+  
+  write.csv(
+    data.frame(term = rownames(results), results, row.names = NULL),
+    file.path(output_dir, paste0("R2_hatch_model_", component, "_group.csv")),
+    row.names = FALSE
+  )
+}
+
+# # Post-hoc comparisons (emmeans)
+emm_cond <- emmeans(
+  hatch_model_rm,
+  ~ Group,
+  component = "cond" # conditional
+)
+
+pairs(emm_cond, adjust = "tukey")
+
+# save as csv
+hatch_pairs_cond <- as.data.frame(
+  summary(
+    pairs(emm_cond, adjust = "tukey"),
+    infer = c(TRUE, TRUE)  # Include 95% CIs and p-values
+  )
+)
+
+# write.csv(
+#   hatch_pairs_cond,
+#   file = "G:/My Drive/Stanford/Research Projects/Plastic & bulinus Experiment/Snail_Data/FinalOutputs ver2/R2_hatch_cond_pairwise_group.csv",
+#   row.names = FALSE
+# )
+
+
+emm_zi <- emmeans(
+  hatch_model_rm,
+  ~ Group,
+  component = "zi" # zero-infated
+)
+
+pairs(emm_zi, adjust = "tukey")
+
+#save as csv 
+hatch_pairs_zi <- as.data.frame(
+  summary(
+    pairs(emm_zi, adjust = "tukey"),
+    infer = c(TRUE, TRUE)  # Include 95% CIs and p-values
+  )
+)
+
+# write.csv(
+#   hatch_pairs_zi,
+#   file = "G:/My Drive/Stanford/Research Projects/Plastic & bulinus Experiment/Snail_Data/FinalOutputs ver2/R2_hatch_zi_pairwise_group.csv",
+#   row.names = FALSE
+# )
+
+
+
+### Plot weekly growth for grouped treatment disregarding abundance #########
+# Summarize the data by Color and Week_num to calculate mean and 95% CI
+fitness_summary <- all_data_hatch %>%
+  group_by(Group, Week_num) %>%
+  summarise(
+    mean_fitness = mean(hatch_success, na.rm = TRUE),
+    sd_fitness   = sd(hatch_success, na.rm = TRUE),
+    n          = n(),
+    se         = sd_fitness / sqrt(n),
+    ci_lower   = mean_fitness - 1.96 * se,
+    ci_upper   = mean_fitness + 1.96 * se
+  ) %>%
+  ungroup()
+
+# Plot across weeks
+R2_hatch_plot_grouped <- ggplot(fitness_summary, aes(x = Week_num, y = mean_fitness, color = Group, group = Group)) +
+  geom_line(linewidth = 1.5) +  # add line connecting dots for each Color group
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper), linewidth = 0.5, width = 0.15) +
+  # geom_smooth(method = "loess", se = FALSE) +
+  # geom_smooth(method = "loess", se = TRUE, aes(fill = Treatment), alpha = 0.2) +  # with se
+  scale_color_manual(values = c("Control" = "#6baf78", "Seasoned Macro" = "#a5855f", "Virgin Macro" = "#8a8a8a"),
+                     labels = c("Control", 
+                                "Biofouled Macro", 
+                                "Virgin Macro")) +
+  scale_fill_manual(values = c("Control" = "#6baf78", "Seasoned Macro" = "#a5855f", "Virgin Macro" = "#8a8a8a")) +
+  scale_x_continuous(breaks = 1:13, labels = 1:13)+
+  labs(
+    x = "Weeks",
+    y = "Mean Hatching Success Rate per Jar",
+    color = "Treatment") +
+  theme_minimal()+ 
+  theme(legend.position = "top",
+        legend.direction = "horizontal",
+        strip.text.x = element_blank(),
+        axis.title = element_text(size = 15, face = "bold"),
+        axis.text = element_text(color = "black", size = 11),
+        legend.title = element_text(size = 10),
+        legend.text = element_text(color = "black", size = 10))
+
+R2_hatch_plot_grouped
+# Save the plot to a PNG file
+ggsave(filename = "R2_hatch_plot_grouped_toplegend.png", plot = R2_hatch_plot_grouped, bg = "white", path = "G:/My Drive/Stanford/Research Projects/Plastic & bulinus Experiment/Snail_Data/FinalOutputs ver2", width = 9, height = 6, dpi = 300)
