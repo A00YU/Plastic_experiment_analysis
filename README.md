@@ -1,4 +1,4 @@
-# Plastic_experiment_analysis README
+# Plastic_Bulinus_experiment_analysis README
 
 # Round 1 experiment data sheet: 
 This experiment has 4 treatments: each treatment has 75 jars, and each jars have 3 snails
