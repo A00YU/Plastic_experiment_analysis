@@ -27,7 +27,10 @@ Growth analysis
 
 Fecundity analysis (egg mass)
 
+Egg per mass estimates
+
 Hatching analysis
 
 Expected reproductive output modeling (with survival, fecundity, and hatching data)
 
+Periphyton analysis (for round 2 only)
